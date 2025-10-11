@@ -27,39 +27,57 @@ class EyeOverlay @JvmOverloads constructor(
         color = Color.GREEN
     }
 
+    // Rect normalized [0..1] dari FaceLandmarkerHelper
     private val leftEye = RectF()
     private val rightEye = RectF()
     private var haveData = false
 
+    // Info dari analyzer
     private var frameW = 0
     private var frameH = 0
     private var mirrorX = false
-    private var rotationDeg = 0
+    private var rotationDeg = 0 // 0/90/180/270
 
+    // ====== Ekspansi bbox asimetris ======
     private val density = resources.displayMetrics.density
-    private var minVertPadPx = 12f * density
-    private var minHorizPadPx = 6f * density
-    private var expandX = 0.30f
-    private var expandY = 0.90f
+    private var expandXRel = 0.35f
+    private var expandYTopRel = 1.10f
+    private var expandYBottomRel = 0.50f
+    private var minLeftPadPx = 8f * density
+    private var minRightPadPx = 8f * density
+    private var minTopPadPx = 20f * density
+    private var minBottomPadPx = 8f * density
 
+    // buffer temp
     private val tmpViewRectL = RectF()
     private val tmpViewRectR = RectF()
     private val tmpBadgeRect = RectF()
 
-    // ====== State per mata ======
+    // State per mata (dari klasifier)
     private var isClosedLeft: Boolean? = null
     private var isClosedRight: Boolean? = null
-    private var pClosedL: Float? = null
-    private var pClosedR: Float? = null
+
+    fun setBoxExpansionAsym(
+        hExpand: Float = expandXRel,
+        vTop: Float = expandYTopRel,
+        vBottom: Float = expandYBottomRel,
+        minHorizPx: Float = 8f * density,
+        minTopPx: Float = 20f * density,
+        minBottomPx: Float = 8f * density
+    ) {
+        expandXRel = hExpand
+        expandYTopRel = vTop
+        expandYBottomRel = vBottom
+        minLeftPadPx = minHorizPx
+        minRightPadPx = minHorizPx
+        minTopPadPx = minTopPx
+        minBottomPadPx = minBottomPx
+        invalidate()
+    }
 
     fun setStateClosedPerEye(left: Boolean?, right: Boolean?) {
         isClosedLeft = left
         isClosedRight = right
-        postInvalidateOnAnimation()
-    }
-    fun setDebugScores(pL: Float?, pR: Float?) {
-        pClosedL = pL
-        pClosedR = pR
         postInvalidateOnAnimation()
     }
 
@@ -114,7 +132,8 @@ class EyeOverlay @JvmOverloads constructor(
             offY = (vh - drawH) / 2f
         }
 
-        fun mapRectInPlace(norm: RectF, out: RectF) {
+        fun mapRectAndExpand(norm: RectF, out: RectF) {
+            // transform 4 titik → view-space
             var minX = 1f; var minY = 1f; var maxX = 0f; var maxY = 0f
             fun acc(nx: Float, ny: Float) {
                 var rx: Float; var ry: Float
@@ -140,10 +159,21 @@ class EyeOverlay @JvmOverloads constructor(
             out.right  = offX + maxX * drawW
             out.bottom = offY + maxY * drawH
 
-            val dx = max(out.width()  * (expandX / 2f), minHorizPadPx)
-            val dy = max(out.height() * (expandY / 2f), minVertPadPx)
-            out.inset(-dx, -dy)
+            // ekspansi per-sisi
+            val w0 = out.width()
+            val h0 = out.height()
+            val dxHalf = max(w0 * (expandXRel / 2f), 0f)
+            val dxLeft  = max(dxHalf, minLeftPadPx)
+            val dxRight = max(dxHalf, minRightPadPx)
+            val dyTop    = max(h0 * expandYTopRel,    minTopPadPx)
+            val dyBottom = max(h0 * expandYBottomRel, minBottomPadPx)
 
+            out.left  -= dxLeft
+            out.right += dxRight
+            out.top   -= dyTop
+            out.bottom += dyBottom
+
+            // clamp
             val leftBound = offX
             val topBound = offY
             val rightBound = offX + drawW
@@ -154,30 +184,28 @@ class EyeOverlay @JvmOverloads constructor(
             if (out.bottom > bottomBound) out.bottom = bottomBound
         }
 
-        // ===== Left eye =====
-        mapRectInPlace(leftEye, tmpViewRectL)
+        // LEFT
+        mapRectAndExpand(leftEye, tmpViewRectL)
         when (isClosedLeft) {
             true -> { boxPaint.color = Color.RED; badgePaint.color = Color.RED }
             false -> { boxPaint.color = Color.GREEN; badgePaint.color = Color.GREEN }
             null -> { boxPaint.color = Color.GRAY; badgePaint.color = Color.GRAY }
         }
         canvas.drawRect(tmpViewRectL, boxPaint)
-        drawBadgeAbove(canvas, tmpViewRectL, if (isClosedLeft == true) "bahaya" else "aman", pClosedL)
+        drawBadgeAbove(canvas, tmpViewRectL, if (isClosedLeft == true) "bahaya" else "aman")
 
-        // ===== Right eye =====
-        mapRectInPlace(rightEye, tmpViewRectR)
+        // RIGHT
+        mapRectAndExpand(rightEye, tmpViewRectR)
         when (isClosedRight) {
             true -> { boxPaint.color = Color.RED; badgePaint.color = Color.RED }
             false -> { boxPaint.color = Color.GREEN; badgePaint.color = Color.GREEN }
             null -> { boxPaint.color = Color.GRAY; badgePaint.color = Color.GRAY }
         }
         canvas.drawRect(tmpViewRectR, boxPaint)
-        drawBadgeAbove(canvas, tmpViewRectR, if (isClosedRight == true) "bahaya" else "aman", pClosedR)
+        drawBadgeAbove(canvas, tmpViewRectR, if (isClosedRight == true) "bahaya" else "aman")
     }
 
-    private fun drawBadgeAbove(canvas: Canvas, rect: RectF, labelIn: String, p: Float?) {
-        val label = if (p != null && !p.isNaN()) "$labelIn ${"%.2f".format(p)}" else labelIn
-
+    private fun drawBadgeAbove(canvas: Canvas, rect: RectF, label: String) {
         val padH = 6f * density
         val padV = 4f * density
         val radius = 6f * density

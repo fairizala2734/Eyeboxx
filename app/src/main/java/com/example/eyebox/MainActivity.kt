@@ -1,7 +1,9 @@
 package com.example.eyebox
 
 import android.Manifest
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.os.Bundle
 import android.os.SystemClock
@@ -21,6 +23,8 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.createBitmap
+import androidx.core.splashscreen.SplashScreen
+import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.framework.image.MPImage
@@ -49,11 +53,20 @@ class MainActivity : ComponentActivity() {
     private var lastInferMs = 0L
     private val MIN_INFER_INTERVAL_MS = 100L // ~10 fps
 
-    // ====== Sticky + hysteresis PER MATA ======
+    // Hysteresis PER MATA
     private var lastClosedLeft: Boolean? = null
     private var lastClosedRight: Boolean? = null
-    private val THRESH_CLOSE = 0.70f
-    private val THRESH_OPEN  = 0.30f
+    private val THRESH_CLOSE = 0.95f
+    private val THRESH_OPEN  = 0.05f
+
+    // Orientation
+    private var orientationListener: OrientationEventListener? = null
+    private var lastSurfaceRotation: Int = Surface.ROTATION_0
+
+    // Intro prefs
+    private lateinit var prefs: SharedPreferences
+    private val PREFS_NAME = "eyebox_prefs"
+    private val KEY_INTRO_OK = "intro_ok"
 
     private val requestPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -63,28 +76,41 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private var orientationListener: OrientationEventListener? = null
-    private var lastSurfaceRotation: Int = Surface.ROTATION_0
-
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+
         setContentView(R.layout.activity_main)
         previewView = findViewById(R.id.previewView)
         overlay = findViewById(R.id.eyeOverlay)
+
+        // (Opsional) jaga layar tetap nyala
         previewView.keepScreenOn = true
 
-        MaterialAlertDialogBuilder(this)
-            .setTitle("EyeBox")
-            .setMessage("Aplikasi akan menggunakan kamera untuk mendeteksi posisi mata.")
-            .setPositiveButton("OK") { _, _ -> ensureCameraPermission() }
-            .setCancelable(false)
-            .show()
+        // Tampilkan intro hanya sekali (saat pertama kali run)
+        val introAccepted = prefs.getBoolean(KEY_INTRO_OK, false)
+        if (!introAccepted) {
+            MaterialAlertDialogBuilder(this)
+                .setTitle("EyeBox")
+                .setMessage("Aplikasi akan menggunakan kamera untuk mendeteksi posisi mata.")
+                .setPositiveButton("OK") { _, _ ->
+                    prefs.edit().putBoolean(KEY_INTRO_OK, true).apply()
+                    ensureCameraPermission()
+                }
+                .setCancelable(false)
+                .show()
+        } else {
+            ensureCameraPermission()
+        }
 
         orientationListener = object : OrientationEventListener(this) {
             override fun onOrientationChanged(orientation: Int) {
+                // Biarkan Activity tidak recreate; cukup update targetRotation
                 val newRotation = when (orientation) {
                     in 45..134  -> Surface.ROTATION_270
                     in 225..314 -> Surface.ROTATION_90
+                    in 0..44, in 315..359 -> Surface.ROTATION_0
+                    in 135..224 -> Surface.ROTATION_180
                     else -> return
                 }
                 if (newRotation != lastSurfaceRotation) {
@@ -96,10 +122,26 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        // Activity tidak recreate; sinkronkan targetRotation dengan tampilan saat ini
+        val rot = previewView.display?.rotation ?: Surface.ROTATION_0
+        if (rot != lastSurfaceRotation) {
+            lastSurfaceRotation = rot
+            preview?.targetRotation = rot
+            analyzer?.targetRotation = rot
+        }
+    }
+
     override fun onResume() {
         super.onResume()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         orientationListener?.enable()
+
+        // Fallback: pastikan targetRotation sesuai rotasi display saat ini
+        val rot = previewView.display?.rotation ?: Surface.ROTATION_0
+        if (preview?.targetRotation != rot) preview?.targetRotation = rot
+        if (analyzer?.targetRotation != rot) analyzer?.targetRotation = rot
     }
 
     override fun onPause() {
@@ -248,9 +290,6 @@ class MainActivity : ComponentActivity() {
             val eyeBoxes = helper.detect(mpImage, 0)
             val first = eyeBoxes.firstOrNull()
 
-            var pL = Float.NaN
-            var pR = Float.NaN
-
             if (first != null && eyeClassifier != null) {
                 val now = SystemClock.uptimeMillis()
                 if (now - lastInferMs >= MIN_INFER_INTERVAL_MS) {
@@ -264,8 +303,8 @@ class MainActivity : ComponentActivity() {
                             frameH = uprightH,
                             rotationDeg = 0 // sudah upright
                         )
-                        pL = result.probsLeft[0]   // [closed, open]
-                        pR = result.probsRight[0]
+                        val pL = result.probsLeft[0]   // [closed, open] -> closed index 0
+                        val pR = result.probsRight[0]
 
                         // Hysteresis PER MATA
                         lastClosedLeft = when (lastClosedLeft) {
@@ -287,19 +326,15 @@ class MainActivity : ComponentActivity() {
                             false -> if (pR >= THRESH_CLOSE) true else false
                         }
 
-                        Log.d("EyeBox", "rot=$rotation, pClosedL=${"%.2f".format(pL)} pClosedR=${"%.2f".format(pR)} stateL=$lastClosedLeft stateR=$lastClosedRight")
+                        Log.d("EyeBox", "rot=$rotation stateL=$lastClosedLeft stateR=$lastClosedRight")
                     } catch (e: Throwable) {
                         e.printStackTrace()
                     }
                 }
-            } else {
-                // jika hilang wajah, jangan reset state supaya tetap stabil
             }
 
             runOnUiThread {
                 overlay.setStateClosedPerEye(lastClosedLeft, lastClosedRight)
-                overlay.setDebugScores(pL, pR) // tampilkan skor kecil di badge
-                // Overlay juga di upright space
                 overlay.updateEyes(
                     first?.first,
                     first?.second,

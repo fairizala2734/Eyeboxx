@@ -78,4 +78,6 @@ dependencies {
     implementation("org.tensorflow:tensorflow-lite-select-tf-ops:2.14.0")
 
     implementation("org.tensorflow:tensorflow-lite:2.14.0")
-}
+
+    implementation("androidx.core:core-splashscreen:1.0.1")
+}   
