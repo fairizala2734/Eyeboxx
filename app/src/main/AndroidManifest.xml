@@ -26,8 +26,21 @@
         </activity>
 
         <activity
+            android:name=".ReminderActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Eyebox" />
+
+        <activity
+            android:name=".WarningActivity"
+            android:exported="true"
+            android:theme="@style/Theme.Eyebox.WarningOverlay"
+            android:launchMode="singleTop"
+            android:excludeFromRecents="true" />
+
+        <activity
             android:name=".MainActivity"
-            android:exported="true" />
+            android:exported="true"
+            android:theme="@style/Theme.Eyebox" />
 
         <meta-data
             android:name="preloaded_fonts"

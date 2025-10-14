@@ -1,6 +1,7 @@
 package com.example.eyebox
 
 import android.Manifest
+import android.content.Intent
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.content.res.Configuration
@@ -23,8 +24,6 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.createBitmap
-import androidx.core.splashscreen.SplashScreen
-import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.framework.image.MPImage
@@ -33,6 +32,12 @@ import kotlinx.coroutines.asExecutor
 import java.nio.ByteBuffer
 
 class MainActivity : ComponentActivity() {
+
+    companion object {
+        private const val PREFS_NAME = "eyebox_prefs"
+        private const val KEY_INTRO_OK = "intro_ok"
+        private const val KEY_LAST_SESSION_MICROSLEEP = "last_session_microsleep"
+    }
 
     private lateinit var previewView: PreviewView
     private lateinit var overlay: EyeOverlay
@@ -63,10 +68,13 @@ class MainActivity : ComponentActivity() {
     private var orientationListener: OrientationEventListener? = null
     private var lastSurfaceRotation: Int = Surface.ROTATION_0
 
-    // Intro prefs
+    // Prefs
     private lateinit var prefs: SharedPreferences
-    private val PREFS_NAME = "eyebox_prefs"
-    private val KEY_INTRO_OK = "intro_ok"
+
+    // Microsleep durasi (sesi saat ini)
+    private var closedStartMs: Long = 0L
+    private val THRESH_MICROSLEEP_MS = 2000L
+    private var warningShown = false
 
     private val requestPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -84,14 +92,14 @@ class MainActivity : ComponentActivity() {
         previewView = findViewById(R.id.previewView)
         overlay = findViewById(R.id.eyeOverlay)
 
-        // (Opsional) jaga layar tetap nyala
+        // jaga layar tetap nyala
         previewView.keepScreenOn = true
 
-        // Tampilkan intro hanya sekali (saat pertama kali run)
+        // Intro hanya sekali (pertama kali run)
         val introAccepted = prefs.getBoolean(KEY_INTRO_OK, false)
         if (!introAccepted) {
             MaterialAlertDialogBuilder(this)
-                .setTitle("EyeBox")
+                .setTitle("Microsleep Detector")
                 .setMessage("Aplikasi akan menggunakan kamera untuk mendeteksi posisi mata.")
                 .setPositiveButton("OK") { _, _ ->
                     prefs.edit().putBoolean(KEY_INTRO_OK, true).apply()
@@ -105,7 +113,6 @@ class MainActivity : ComponentActivity() {
 
         orientationListener = object : OrientationEventListener(this) {
             override fun onOrientationChanged(orientation: Int) {
-                // Biarkan Activity tidak recreate; cukup update targetRotation
                 val newRotation = when (orientation) {
                     in 45..134  -> Surface.ROTATION_270
                     in 225..314 -> Surface.ROTATION_90
@@ -124,7 +131,6 @@ class MainActivity : ComponentActivity() {
 
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
-        // Activity tidak recreate; sinkronkan targetRotation dengan tampilan saat ini
         val rot = previewView.display?.rotation ?: Surface.ROTATION_0
         if (rot != lastSurfaceRotation) {
             lastSurfaceRotation = rot
@@ -138,7 +144,6 @@ class MainActivity : ComponentActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         orientationListener?.enable()
 
-        // Fallback: pastikan targetRotation sesuai rotasi display saat ini
         val rot = previewView.display?.rotation ?: Surface.ROTATION_0
         if (preview?.targetRotation != rot) preview?.targetRotation = rot
         if (analyzer?.targetRotation != rot) analyzer?.targetRotation = rot
@@ -324,6 +329,27 @@ class MainActivity : ComponentActivity() {
                             }
                             true -> if (pR <= THRESH_OPEN) false else true
                             false -> if (pR >= THRESH_CLOSE) true else false
+                        }
+
+                        // --- durasi kedua mata tertutup -> WarningActivity + tandai sesi ---
+                        val bothClosed = (lastClosedLeft == true && lastClosedRight == true)
+                        val nowMs = SystemClock.uptimeMillis()
+                        if (bothClosed) {
+                            if (closedStartMs == 0L) closedStartMs = nowMs
+                            val dur = nowMs - closedStartMs
+                            if (!warningShown && dur >= THRESH_MICROSLEEP_MS) {
+                                warningShown = true
+                                // tandai agar ReminderActivity menampilkan pesan "microsleep terdeteksi" pada startup berikutnya
+                                prefs.edit().putBoolean(KEY_LAST_SESSION_MICROSLEEP, true).apply()
+                                // tampilkan warning overlay
+                                runOnUiThread {
+                                    startActivity(Intent(this, WarningActivity::class.java))
+                                }
+                                Log.i("EyeBox", "MICROSLEEP: dur=${dur}ms")
+                            }
+                        } else {
+                            closedStartMs = 0L
+                            warningShown = false
                         }
 
                         Log.d("EyeBox", "rot=$rotation stateL=$lastClosedLeft stateR=$lastClosedRight")

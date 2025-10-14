@@ -4,19 +4,135 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:keepScreenOn="true">
+    android:background="#0D1117">
 
-    <androidx.camera.view.PreviewView
-        android:id="@+id/previewView"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        app:implementationMode="performance"
-        app:scaleType="fitCenter" />
+    <!-- JUDUL: "MICROSLEEP\nDETECTOR" -->
+    <com.example.eyebox.StrokeTextView
+        android:id="@+id/tvTitle"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="24dp"
+        android:layout_marginEnd="24dp"
+        android:layout_marginBottom="10dp"
+        android:fontFamily="@font/poppins_semibold"
+        android:gravity="center"
+        android:includeFontPadding="false"
+        android:lineSpacingExtra="0dp"
+        android:lineSpacingMultiplier="1.0"
+        android:lineHeight="32sp"
+        android:text="MICROSLEEP\nDETECTOR"
+        android:textAlignment="center"
+        android:textColor="#E9EEF3"
+        android:textSize="32sp"
+        app:layout_constraintBottom_toTopOf="@+id/cameraCard"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent" />
 
-    <com.example.eyebox.EyeOverlay
-        android:id="@+id/eyeOverlay"
-        android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:clickable="false"
-        android:focusable="false" />
+    <!-- FRAME KAMERA (center, 348x464dp = rasio 3:4 / tinggi 4, lebar 3) -->
+    <com.google.android.material.card.MaterialCardView
+        android:id="@+id/cameraCard"
+        android:layout_width="360dp"
+        android:layout_height="480dp"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintBottom_toBottomOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:cardCornerRadius="20dp"
+        app:strokeWidth="1dp"
+        app:strokeColor="#38414A"
+        app:cardBackgroundColor="#242B33"
+        app:cardUseCompatPadding="false"
+        app:cardPreventCornerOverlap="true">
+
+        <!-- isi kartu: stream camera + overlay -->
+        <FrameLayout
+            android:layout_width="match_parent"
+            android:layout_height="match_parent">
+
+            <androidx.camera.view.PreviewView
+                android:id="@+id/previewView"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:keepScreenOn="true"
+                android:scaleType="centerCrop"
+                app:implementationMode="performance" />
+
+            <com.example.eyebox.EyeOverlay
+                android:id="@+id/eyeOverlay"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:clickable="false"
+                android:focusable="false" />
+        </FrameLayout>
+    </com.google.android.material.card.MaterialCardView>
+
+    <!-- KETERANGAN di bawah kamera -->
+    <LinearLayout
+        android:id="@+id/legendRow"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:gravity="center"
+        app:layout_constraintTop_toBottomOf="@id/cameraCard"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginStart="24dp"
+        android:layout_marginEnd="24dp"
+        android:layout_marginTop="10dp">
+
+        <com.example.eyebox.StrokeTextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="Keterangan:"
+            android:textColor="#E9EEF3"
+            android:textSize="18sp"
+            android:fontFamily="@font/poppins_semibold" />
+
+        <!-- jarak 20dp antara 'Keterangan:' dan item pertama -->
+        <Space
+            android:layout_width="20dp"
+            android:layout_height="0dp" />
+
+        <ImageView
+            android:layout_width="18dp"
+            android:layout_height="18dp"
+            android:src="@drawable/ic_dot_green"
+            android:contentDescription="@null" />
+
+        <Space
+            android:layout_width="0dp"
+            android:layout_height="0dp" />
+
+        <com.example.eyebox.StrokeTextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text=" Aman"
+            android:textColor="#E9EEF3"
+            android:textSize="18sp"
+            android:fontFamily="@font/poppins_semibold" />
+
+        <!-- jarak 20dp antara 'Aman' dan 'Bahaya' -->
+        <Space
+            android:layout_width="20dp"
+            android:layout_height="0dp" />
+
+        <ImageView
+            android:layout_width="18dp"
+            android:layout_height="18dp"
+            android:src="@drawable/ic_dot_red"
+            android:contentDescription="@null" />
+
+        <Space
+            android:layout_width="0dp"
+            android:layout_height="0dp" />
+
+        <com.example.eyebox.StrokeTextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text=" Bahaya"
+            android:textColor="#E9EEF3"
+            android:textSize="18sp"
+            android:fontFamily="@font/poppins_semibold" />
+    </LinearLayout>
+
 </androidx.constraintlayout.widget.ConstraintLayout>

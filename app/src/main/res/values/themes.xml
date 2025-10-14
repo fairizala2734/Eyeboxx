@@ -20,4 +20,11 @@
         <item name="windowSplashScreenAnimatedIcon">@drawable/splash_blank</item>
         <item name="postSplashScreenTheme">@style/Theme.Eyebox</item>
     </style>
+
+    <style name="Theme.Eyebox.WarningOverlay" parent="Theme.Material3.Dark.NoActionBar">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowContentOverlay">@null</item>
+        <item name="android:backgroundDimEnabled">false</item> <!-- kita pakai overlay sendiri -->
+    </style>
 </resources>

@@ -1,0 +1,53 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:background="#0D1117">
+
+    <LinearLayout
+        android:layout_width="275dp"
+        android:layout_height="350dp"
+        android:layout_gravity="center"
+        android:layout_marginLeft="24dp"
+        android:layout_marginRight="24dp"
+        android:orientation="vertical"
+        android:background="@drawable/bg_reminder_panel">
+
+        <com.example.eyebox.StrokeTextView
+            android:id="@+id/tvReminder"
+            android:layout_width="match_parent"
+            android:layout_height="276dp"
+            android:fontFamily="@font/poppins_semibold"
+            android:gravity="center"
+            android:lineSpacingExtra="1dp"
+            android:paddingLeft="24dp"
+            android:paddingTop="28dp"
+            android:paddingRight="24dp"
+            android:paddingBottom="28dp"
+            android:text="...akan di-set runtime balsbdlkabdklba"
+            android:textColor="@color/reminder_text"
+            android:textSize="18sp"
+            app:strokeColor="#000000"
+            app:strokeWidth="1dp" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="@drawable/divider_reminder"/>
+
+        <com.example.eyebox.StrokeTextView
+            android:id="@+id/btnLanjutkan"
+            android:layout_width="match_parent"
+            android:layout_height="73dp"
+            android:background="@drawable/bg_reminder_button"
+            android:fontFamily="@font/poppins_extrabold"
+            android:gravity="center"
+            android:text="LANJUTKAN"
+            android:textAllCaps="true"
+            android:textColor="@color/reminder_button_text"
+            android:textSize="32sp"
+            app:strokeColor="#000000"
+            app:strokeWidth="1dp" />
+    </LinearLayout>
+</FrameLayout>
