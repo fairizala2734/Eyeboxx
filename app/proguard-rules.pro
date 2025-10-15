@@ -19,3 +19,13 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# TensorFlow Lite
+-keep class org.tensorflow.** { *; }
+-dontwarn org.tensorflow.**
+
+# MediaPipe Tasks
+-keep class com.google.mediapipe.** { *; }
+-dontwarn com.google.mediapipe.**
+
+# (Opsional) Material/AndroidX biasanya aman dengan default R8 rules dari AGP

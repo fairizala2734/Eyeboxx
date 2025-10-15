@@ -1,10 +1,29 @@
 <?xml version="1.0" encoding="utf-8"?>
 <androidx.constraintlayout.widget.ConstraintLayout
+    android:id="@+id/root"
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="#0D1117">
+
+    <TextView
+        android:id="@+id/tvPerf"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="FPS --  |  Lat -- ms"
+        android:textSize="12sp"
+        android:textColor="#E9EEF3"
+        android:fontFamily="monospace"
+        android:paddingStart="8dp"
+        android:paddingEnd="8dp"
+        android:paddingTop="4dp"
+        android:paddingBottom="4dp"
+        android:background="#66000000"
+        app:layout_constraintTop_toTopOf="parent"
+        app:layout_constraintEnd_toEndOf="parent"
+        android:layout_marginTop="8dp"
+        android:layout_marginEnd="8dp"/>
 
     <!-- JUDUL: "MICROSLEEP\nDETECTOR" -->
     <com.example.eyebox.StrokeTextView

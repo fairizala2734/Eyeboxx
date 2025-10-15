@@ -1,7 +1,11 @@
 package com.example.eyebox
 
 import android.content.Context
-import android.graphics.*
+import android.graphics.Canvas
+import android.graphics.Color
+import android.graphics.Paint
+import android.graphics.RectF
+import android.graphics.Typeface
 import android.util.AttributeSet
 import android.view.View
 import kotlin.math.max
@@ -27,18 +31,15 @@ class EyeOverlay @JvmOverloads constructor(
         color = Color.GREEN
     }
 
-    // Rect normalized [0..1] dari FaceLandmarkerHelper
     private val leftEye = RectF()
     private val rightEye = RectF()
     private var haveData = false
 
-    // Info dari analyzer
     private var frameW = 0
     private var frameH = 0
     private var mirrorX = false
     private var rotationDeg = 0 // 0/90/180/270
 
-    // ====== Ekspansi bbox asimetris ======
     private val density = resources.displayMetrics.density
     private var expandXRel = 0.35f
     private var expandYTopRel = 1.10f
@@ -48,12 +49,10 @@ class EyeOverlay @JvmOverloads constructor(
     private var minTopPadPx = 20f * density
     private var minBottomPadPx = 8f * density
 
-    // buffer temp
     private val tmpViewRectL = RectF()
     private val tmpViewRectR = RectF()
     private val tmpBadgeRect = RectF()
 
-    // State per mata (dari klasifier)
     private var isClosedLeft: Boolean? = null
     private var isClosedRight: Boolean? = null
 
@@ -133,7 +132,6 @@ class EyeOverlay @JvmOverloads constructor(
         }
 
         fun mapRectAndExpand(norm: RectF, out: RectF) {
-            // transform 4 titik → view-space
             var minX = 1f; var minY = 1f; var maxX = 0f; var maxY = 0f
             fun acc(nx: Float, ny: Float) {
                 var rx: Float; var ry: Float
@@ -159,7 +157,6 @@ class EyeOverlay @JvmOverloads constructor(
             out.right  = offX + maxX * drawW
             out.bottom = offY + maxY * drawH
 
-            // ekspansi per-sisi
             val w0 = out.width()
             val h0 = out.height()
             val dxHalf = max(w0 * (expandXRel / 2f), 0f)
@@ -173,7 +170,6 @@ class EyeOverlay @JvmOverloads constructor(
             out.top   -= dyTop
             out.bottom += dyBottom
 
-            // clamp
             val leftBound = offX
             val topBound = offY
             val rightBound = offX + drawW
@@ -184,22 +180,20 @@ class EyeOverlay @JvmOverloads constructor(
             if (out.bottom > bottomBound) out.bottom = bottomBound
         }
 
-        // LEFT
         mapRectAndExpand(leftEye, tmpViewRectL)
         when (isClosedLeft) {
-            true -> { boxPaint.color = Color.RED; badgePaint.color = Color.RED }
-            false -> { boxPaint.color = Color.GREEN; badgePaint.color = Color.GREEN }
-            null -> { boxPaint.color = Color.GRAY; badgePaint.color = Color.GRAY }
+            true  -> { boxPaint.color = Color.RED;  badgePaint.color = Color.RED }
+            false -> { boxPaint.color = Color.GREEN;badgePaint.color = Color.GREEN }
+            null  -> { boxPaint.color = Color.GRAY; badgePaint.color = Color.GRAY }
         }
         canvas.drawRect(tmpViewRectL, boxPaint)
         drawBadgeAbove(canvas, tmpViewRectL, if (isClosedLeft == true) "bahaya" else "aman")
 
-        // RIGHT
         mapRectAndExpand(rightEye, tmpViewRectR)
         when (isClosedRight) {
-            true -> { boxPaint.color = Color.RED; badgePaint.color = Color.RED }
-            false -> { boxPaint.color = Color.GREEN; badgePaint.color = Color.GREEN }
-            null -> { boxPaint.color = Color.GRAY; badgePaint.color = Color.GRAY }
+            true  -> { boxPaint.color = Color.RED;  badgePaint.color = Color.RED }
+            false -> { boxPaint.color = Color.GREEN;badgePaint.color = Color.GREEN }
+            null  -> { boxPaint.color = Color.GRAY; badgePaint.color = Color.GRAY }
         }
         canvas.drawRect(tmpViewRectR, boxPaint)
         drawBadgeAbove(canvas, tmpViewRectR, if (isClosedRight == true) "bahaya" else "aman")
@@ -225,14 +219,8 @@ class EyeOverlay @JvmOverloads constructor(
         if (left < 0f) left = 0f
         var right = left + badgeW
         var bottom = top + badgeH
-        if (right > width) {
-            right = width.toFloat()
-            left = right - badgeW
-        }
-        if (bottom > height) {
-            bottom = height.toFloat()
-            top = bottom - badgeH
-        }
+        if (right > width) { right = width.toFloat(); left = right - badgeW }
+        if (bottom > height) { bottom = height.toFloat(); top = bottom - badgeH }
 
         tmpBadgeRect.set(left, top, right, bottom)
         canvas.drawRoundRect(tmpBadgeRect, radius, radius, badgePaint)

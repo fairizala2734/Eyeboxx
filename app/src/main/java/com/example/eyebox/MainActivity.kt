@@ -9,27 +9,30 @@ import android.graphics.Bitmap
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
-import android.util.Size
 import android.view.OrientationEventListener
 import android.view.Surface
+import android.view.View
 import android.view.WindowManager
+import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.camera.core.*
 import androidx.camera.core.resolutionselector.AspectRatioStrategy
 import androidx.camera.core.resolutionselector.ResolutionSelector
-import androidx.camera.core.resolutionselector.ResolutionStrategy
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.content.ContextCompat
 import androidx.core.graphics.createBitmap
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.mediapipe.framework.image.BitmapImageBuilder
 import com.google.mediapipe.framework.image.MPImage
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.asExecutor
 import java.nio.ByteBuffer
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
 
 class MainActivity : ComponentActivity() {
 
@@ -37,44 +40,47 @@ class MainActivity : ComponentActivity() {
         private const val PREFS_NAME = "eyebox_prefs"
         private const val KEY_INTRO_OK = "intro_ok"
         private const val KEY_LAST_SESSION_MICROSLEEP = "last_session_microsleep"
+
+        private const val THRESH_MICROSLEEP_MS = 2000L
+        private const val THRESH_CLOSE = 0.95f
+        private const val THRESH_OPEN  = 0.05f
     }
 
     private lateinit var previewView: PreviewView
     private lateinit var overlay: EyeOverlay
+    private lateinit var tvPerf: TextView
+
     private var faceHelper: FaceLandmarkerHelper? = null
     private var eyeClassifier: EyeClassifier? = null
 
     private var preview: Preview? = null
     private var analyzer: ImageAnalysis? = null
 
-    // Cache per frame
     private var cachedBitmap: Bitmap? = null
     private var cachedArgb: IntArray? = null
     private var cachedRowBuffer: ByteArray? = null
     private var cachedW = -1
     private var cachedH = -1
 
-    // Throttle inferensi
-    private var lastInferMs = 0L
-    private val MIN_INFER_INTERVAL_MS = 100L // ~10 fps
-
-    // Hysteresis PER MATA
     private var lastClosedLeft: Boolean? = null
     private var lastClosedRight: Boolean? = null
-    private val THRESH_CLOSE = 0.95f
-    private val THRESH_OPEN  = 0.05f
 
-    // Orientation
     private var orientationListener: OrientationEventListener? = null
     private var lastSurfaceRotation: Int = Surface.ROTATION_0
 
-    // Prefs
     private lateinit var prefs: SharedPreferences
 
-    // Microsleep durasi (sesi saat ini)
     private var closedStartMs: Long = 0L
-    private val THRESH_MICROSLEEP_MS = 2000L
     private var warningShown = false
+
+    private val analysisExecutor = Executors.newSingleThreadExecutor()
+    @Volatile private var analyzingEnabled = false
+
+    private var fpsFrames = 0
+    private var fpsWindowStartMs = 0L
+    private var lastUiPerfUpdateMs = 0L
+    private var lastFps = 0.0
+    private var emaLatencyMs = -1.0
 
     private val requestPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -89,13 +95,17 @@ class MainActivity : ComponentActivity() {
         prefs = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
 
         setContentView(R.layout.activity_main)
+        enterImmersiveMode()
+
+        val root = findViewById<View>(R.id.root)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        ViewCompat.setOnApplyWindowInsetsListener(root) { _, _ -> WindowInsetsCompat.CONSUMED }
+
         previewView = findViewById(R.id.previewView)
         overlay = findViewById(R.id.eyeOverlay)
-
-        // jaga layar tetap nyala
+        tvPerf = findViewById(R.id.tvPerf)
         previewView.keepScreenOn = true
 
-        // Intro hanya sekali (pertama kali run)
         val introAccepted = prefs.getBoolean(KEY_INTRO_OK, false)
         if (!introAccepted) {
             MaterialAlertDialogBuilder(this)
@@ -129,6 +139,11 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) enterImmersiveMode()
+    }
+
     override fun onConfigurationChanged(newConfig: Configuration) {
         super.onConfigurationChanged(newConfig)
         val rot = previewView.display?.rotation ?: Surface.ROTATION_0
@@ -143,16 +158,17 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         orientationListener?.enable()
-
-        val rot = previewView.display?.rotation ?: Surface.ROTATION_0
-        if (preview?.targetRotation != rot) preview?.targetRotation = rot
-        if (analyzer?.targetRotation != rot) analyzer?.targetRotation = rot
+        startCamera()
+        analyzingEnabled = true
     }
 
     override fun onPause() {
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         orientationListener?.disable()
         super.onPause()
+        analyzingEnabled = false
+        analyzer?.clearAnalyzer()
+        ProcessCameraProvider.getInstance(this).get().unbindAll()
     }
 
     private fun ensureCameraPermission() {
@@ -170,35 +186,28 @@ class MainActivity : ComponentActivity() {
             val initialRotation = previewView.display?.rotation ?: Surface.ROTATION_0
             lastSurfaceRotation = initialRotation
 
-            val resSelectorPreview = ResolutionSelector.Builder()
+            val resSelector4x3 = ResolutionSelector.Builder()
                 .setAspectRatioStrategy(
                     AspectRatioStrategy(AspectRatio.RATIO_4_3, AspectRatioStrategy.FALLBACK_RULE_AUTO)
-                )
-                .build()
-
-            val resSelectorAnalysis = ResolutionSelector.Builder()
-                .setAspectRatioStrategy(
-                    AspectRatioStrategy(AspectRatio.RATIO_4_3, AspectRatioStrategy.FALLBACK_RULE_AUTO)
-                )
-                .setResolutionStrategy(
-                    ResolutionStrategy(Size(640, 480), ResolutionStrategy.FALLBACK_RULE_CLOSEST_HIGHER_THEN_LOWER)
                 )
                 .build()
 
             preview = Preview.Builder()
-                .setResolutionSelector(resSelectorPreview)
+                .setResolutionSelector(resSelector4x3)
                 .setTargetRotation(initialRotation)
                 .build().also {
                     it.setSurfaceProvider(previewView.surfaceProvider)
                 }
 
             analyzer = ImageAnalysis.Builder()
-                .setResolutionSelector(resSelectorAnalysis)
+                .setResolutionSelector(resSelector4x3)
                 .setOutputImageFormat(ImageAnalysis.OUTPUT_IMAGE_FORMAT_RGBA_8888)
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .setTargetRotation(initialRotation)
                 .build().also { ia ->
-                    ia.setAnalyzer(Dispatchers.Default.asExecutor()) { image -> analyze(image) }
+                    ia.setAnalyzer(analysisExecutor) { image ->
+                        if (analyzingEnabled) analyze(image) else image.close()
+                    }
                 }
 
             val cameraSelector = CameraSelector.DEFAULT_FRONT_CAMERA
@@ -207,9 +216,10 @@ class MainActivity : ComponentActivity() {
                 cameraProvider.bindToLifecycle(this, cameraSelector, preview, analyzer)
 
                 if (faceHelper == null) {
-                    faceHelper = FaceLandmarkerHelper(applicationContext).apply {
-                        setup("face_landmarker.task")
-                    }
+                    faceHelper = FaceLandmarkerHelper(
+                        applicationContext,
+                        preferGpu = false
+                    ).apply { setup("face_landmarker.task") }
                 }
                 if (eyeClassifier == null) {
                     eyeClassifier = EyeClassifier(
@@ -241,6 +251,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun analyze(image: ImageProxy) {
+        val frameStartMs = SystemClock.uptimeMillis()
         try {
             val helper = faceHelper ?: return
 
@@ -284,78 +295,75 @@ class MainActivity : ComponentActivity() {
             val rawBitmap = cachedBitmap!!
             rawBitmap.setPixels(argb, 0, w, 0, 0, w, h)
 
-            // Normalisasi rotasi → upright
             val rotation = image.imageInfo.rotationDegrees
             val uprightBitmap = rotateBitmap(rawBitmap, rotation)
             val uprightW = uprightBitmap.width
             val uprightH = uprightBitmap.height
 
-            // Deteksi landmark pada upright (rotation=0)
             val mpImage: MPImage = BitmapImageBuilder(uprightBitmap).build()
-            val eyeBoxes = helper.detect(mpImage, 0)
+
+            val tsNs = image.imageInfo.timestamp
+            val tsMs = if (tsNs != 0L) TimeUnit.NANOSECONDS.toMillis(tsNs) else SystemClock.uptimeMillis()
+
+            val eyeBoxes = helper.detectForVideo(mpImage, 0, tsMs)
             val first = eyeBoxes.firstOrNull()
 
             if (first != null && eyeClassifier != null) {
-                val now = SystemClock.uptimeMillis()
-                if (now - lastInferMs >= MIN_INFER_INTERVAL_MS) {
-                    lastInferMs = now
-                    try {
-                        val result = eyeClassifier!!.classifyPerEye(
-                            frameBitmap = uprightBitmap,
-                            leftEyeNorm  = first.first,
-                            rightEyeNorm = first.second,
-                            frameW = uprightW,
-                            frameH = uprightH,
-                            rotationDeg = 0 // sudah upright
-                        )
-                        val pL = result.probsLeft[0]   // [closed, open] -> closed index 0
-                        val pR = result.probsRight[0]
+                try {
+                    val result = eyeClassifier!!.classifyPerEye(
+                        frameBitmap = uprightBitmap,
+                        leftEyeNorm  = first.first,
+                        rightEyeNorm = first.second,
+                        frameW = uprightW,
+                        frameH = uprightH,
+                        rotationDeg = 0
+                    )
+                    val pL = result.probsLeft[0]   // [closed, open]
+                    val pR = result.probsRight[0]
 
-                        // Hysteresis PER MATA
-                        lastClosedLeft = when (lastClosedLeft) {
-                            null -> when {
-                                pL >= THRESH_CLOSE -> true
-                                pL <= THRESH_OPEN  -> false
-                                else -> lastClosedLeft
-                            }
-                            true -> if (pL <= THRESH_OPEN) false else true
-                            false -> if (pL >= THRESH_CLOSE) true else false
+                    lastClosedLeft = when (lastClosedLeft) {
+                        null -> when {
+                            pL >= THRESH_CLOSE -> true
+                            pL <= THRESH_OPEN  -> false
+                            else -> lastClosedLeft
                         }
-                        lastClosedRight = when (lastClosedRight) {
-                            null -> when {
-                                pR >= THRESH_CLOSE -> true
-                                pR <= THRESH_OPEN  -> false
-                                else -> lastClosedRight
-                            }
-                            true -> if (pR <= THRESH_OPEN) false else true
-                            false -> if (pR >= THRESH_CLOSE) true else false
-                        }
-
-                        // --- durasi kedua mata tertutup -> WarningActivity + tandai sesi ---
-                        val bothClosed = (lastClosedLeft == true && lastClosedRight == true)
-                        val nowMs = SystemClock.uptimeMillis()
-                        if (bothClosed) {
-                            if (closedStartMs == 0L) closedStartMs = nowMs
-                            val dur = nowMs - closedStartMs
-                            if (!warningShown && dur >= THRESH_MICROSLEEP_MS) {
-                                warningShown = true
-                                // tandai agar ReminderActivity menampilkan pesan "microsleep terdeteksi" pada startup berikutnya
-                                prefs.edit().putBoolean(KEY_LAST_SESSION_MICROSLEEP, true).apply()
-                                // tampilkan warning overlay
-                                runOnUiThread {
-                                    startActivity(Intent(this, WarningActivity::class.java))
-                                }
-                                Log.i("EyeBox", "MICROSLEEP: dur=${dur}ms")
-                            }
-                        } else {
-                            closedStartMs = 0L
-                            warningShown = false
-                        }
-
-                        Log.d("EyeBox", "rot=$rotation stateL=$lastClosedLeft stateR=$lastClosedRight")
-                    } catch (e: Throwable) {
-                        e.printStackTrace()
+                        true -> if (pL <= THRESH_OPEN) false else true
+                        false -> if (pL >= THRESH_CLOSE) true else false
                     }
+                    lastClosedRight = when (lastClosedRight) {
+                        null -> when {
+                            pR >= THRESH_CLOSE -> true
+                            pR <= THRESH_OPEN  -> false
+                            else -> lastClosedRight
+                        }
+                        true -> if (pR <= THRESH_OPEN) false else true
+                        false -> if (pR >= THRESH_CLOSE) true else false
+                    }
+
+                    val bothClosed = (lastClosedLeft == true && lastClosedRight == true)
+                    val nowMs = SystemClock.uptimeMillis()
+
+                    if (bothClosed) {
+                        if (closedStartMs == 0L) {
+                            closedStartMs = nowMs
+                            Log.i("EyeBox", "start")
+                        }
+                        val dur = nowMs - closedStartMs
+
+                        if (!warningShown && dur >= THRESH_MICROSLEEP_MS) {
+                            warningShown = true
+                            Log.i("EyeBox", "alarm: ${dur}ms")
+
+                            AlarmPlayer.play(applicationContext)
+                            prefs.edit().putBoolean(KEY_LAST_SESSION_MICROSLEEP, true).apply()
+                            runOnUiThread { startActivity(Intent(this, WarningActivity::class.java)) }
+                        }
+                    } else {
+                        closedStartMs = 0L
+                        warningShown = false
+                    }
+                } catch (e: Throwable) {
+                    Log.w("EyeBox", "infer error: ${e.message}")
                 }
             }
 
@@ -371,16 +379,40 @@ class MainActivity : ComponentActivity() {
                 )
             }
         } catch (t: Throwable) {
-            t.printStackTrace()
+            Log.e("EyeBox", "analyze err", t)
         } finally {
+            val now = SystemClock.uptimeMillis()
+            val latency = (now - frameStartMs).toDouble()
+            emaLatencyMs = if (emaLatencyMs < 0) latency else (0.8 * emaLatencyMs + 0.2 * latency)
+            if (fpsWindowStartMs == 0L) fpsWindowStartMs = now
+            fpsFrames++
+            val windowDur = (now - fpsWindowStartMs)
+            if (windowDur >= 1000L) {
+                lastFps = fpsFrames * 1000.0 / windowDur.toDouble()
+                fpsFrames = 0
+                fpsWindowStartMs = now
+            }
+            if (now - lastUiPerfUpdateMs >= 250L) {
+                lastUiPerfUpdateMs = now
+                val text = String.format("FPS %.1f  |  Lat %.1f ms", lastFps, emaLatencyMs)
+                runOnUiThread { tvPerf.text = text }
+            }
             image.close()
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
+        analyzingEnabled = false
+        analyzer?.clearAnalyzer()
+        ProcessCameraProvider.getInstance(this).get().unbindAll()
+
+        analysisExecutor.shutdown()
+        try { analysisExecutor.awaitTermination(200, TimeUnit.MILLISECONDS) } catch (_: Throwable) {}
+
         faceHelper?.close(); faceHelper = null
         eyeClassifier?.close(); eyeClassifier = null
+
         cachedBitmap = null; cachedArgb = null; cachedRowBuffer = null
     }
 }

@@ -3,9 +3,13 @@ package com.example.eyebox
 import android.content.Intent
 import android.graphics.drawable.ColorDrawable
 import android.os.Bundle
+import android.view.View
 import android.view.WindowManager
 import android.widget.TextView
 import androidx.activity.ComponentActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
 
 class ReminderActivity : ComponentActivity() {
 
@@ -17,8 +21,12 @@ class ReminderActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_reminder)
+        enterImmersiveMode()
 
-        // background sudah #0D1117 dari layout; tambahkan dim ringan bila mau
+        val root = findViewById<View>(R.id.root)
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        ViewCompat.setOnApplyWindowInsetsListener(root) { _, _ -> WindowInsetsCompat.CONSUMED }
+
         window.setBackgroundDrawable(ColorDrawable(0x00000000))
         window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
         window.setDimAmount(0.35f)
@@ -34,10 +42,14 @@ class ReminderActivity : ComponentActivity() {
         }
 
         findViewById<TextView>(R.id.btnLanjutkan).setOnClickListener {
-            // Reset baseline untuk sesi BARU ini → dianggap aman sampai ada kejadian
             prefs.edit().putBoolean(KEY_LAST_SESSION_MICROSLEEP, false).apply()
             startActivity(Intent(this, MainActivity::class.java))
             finish()
         }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) enterImmersiveMode()
     }
 }

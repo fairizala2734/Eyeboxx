@@ -2,6 +2,9 @@ package com.example.eyebox
 
 import android.content.Context
 import android.graphics.RectF
+import android.os.SystemClock
+import com.google.mediapipe.framework.image.MPImage
+import com.google.mediapipe.tasks.components.containers.NormalizedLandmark
 import com.google.mediapipe.tasks.core.BaseOptions
 import com.google.mediapipe.tasks.core.Delegate
 import com.google.mediapipe.tasks.vision.core.ImageProcessingOptions
@@ -9,8 +12,6 @@ import com.google.mediapipe.tasks.vision.core.RunningMode
 import com.google.mediapipe.tasks.vision.facelandmarker.FaceLandmarker
 import com.google.mediapipe.tasks.vision.facelandmarker.FaceLandmarker.FaceLandmarkerOptions
 import com.google.mediapipe.tasks.vision.facelandmarker.FaceLandmarkerResult
-import com.google.mediapipe.tasks.components.containers.NormalizedLandmark
-import com.google.mediapipe.framework.image.MPImage
 
 class FaceLandmarkerHelper(
     private val context: Context,
@@ -18,25 +19,26 @@ class FaceLandmarkerHelper(
     private val minFaceDetectionConfidence: Float = 0.5f,
     private val minFaceTrackingConfidence: Float = 0.5f,
     private val minFacePresenceConfidence: Float = 0.5f,
+    private val preferGpu: Boolean = false
 ) {
     private var landmarker: FaceLandmarker? = null
 
     fun setup(modelAssetPath: String = "face_landmarker.task") {
         if (landmarker != null) return
 
+        val base = BaseOptions.builder()
+            .setModelAssetPath(modelAssetPath)
+            .setDelegate(if (preferGpu) Delegate.GPU else Delegate.CPU)
+            .build()
+
         val options = FaceLandmarkerOptions.builder()
-            .setBaseOptions(
-                BaseOptions.builder()
-                    .setDelegate(Delegate.CPU)
-                    .setModelAssetPath(modelAssetPath)
-                    .build()
-            )
+            .setBaseOptions(base)
             .setNumFaces(maxFaces)
             .setMinFaceDetectionConfidence(minFaceDetectionConfidence)
             .setMinFacePresenceConfidence(minFacePresenceConfidence)
             .setMinTrackingConfidence(minFaceTrackingConfidence)
             .setOutputFaceBlendshapes(false)
-            .setRunningMode(RunningMode.IMAGE)
+            .setRunningMode(RunningMode.VIDEO)
             .build()
 
         landmarker = FaceLandmarker.createFromOptions(context.applicationContext, options)
@@ -47,14 +49,16 @@ class FaceLandmarkerHelper(
         landmarker = null
     }
 
-    fun detect(mpImage: MPImage, rotationDegrees: Int): List<Pair<RectF, RectF>> {
+    fun detectForVideo(mpImage: MPImage, rotationDegrees: Int, timestampMs: Long): List<Pair<RectF, RectF>> {
         val lm = landmarker ?: return emptyList()
+
         val imgOpts = ImageProcessingOptions.builder()
             .setRotationDegrees(rotationDegrees)
             .build()
-        val result: FaceLandmarkerResult = lm.detect(mpImage, imgOpts)
 
+        val result: FaceLandmarkerResult = lm.detectForVideo(mpImage, imgOpts, timestampMs)
         val out = ArrayList<Pair<RectF, RectF>>(1)
+
         for (face in result.faceLandmarks()) {
             val left = rectFromIndices(face, LEFT_EYE_INDICES)
             val right = rectFromIndices(face, RIGHT_EYE_INDICES)
@@ -62,6 +66,9 @@ class FaceLandmarkerHelper(
         }
         return out
     }
+
+    fun detectForVideo(mpImage: MPImage, rotationDegrees: Int): List<Pair<RectF, RectF>> =
+        detectForVideo(mpImage, rotationDegrees, SystemClock.uptimeMillis())
 
     private fun rectFromIndices(
         landmarks: List<NormalizedLandmark>,
@@ -78,11 +85,10 @@ class FaceLandmarkerHelper(
             if (p.y() > maxY) maxY = p.y()
         }
         if (maxX <= minX || maxY <= minY) return null
-        return RectF(minX, minY, maxX, maxY) // normalized [0..1]
+        return RectF(minX, minY, maxX, maxY)
     }
 
     companion object {
-        // POV subjek
         val LEFT_EYE_INDICES = intArrayOf(33, 7, 163, 144, 145, 153, 154, 155, 133)
         val RIGHT_EYE_INDICES = intArrayOf(263, 249, 390, 373, 374, 380, 381, 382, 362)
     }

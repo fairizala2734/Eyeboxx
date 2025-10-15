@@ -1,6 +1,7 @@
 package com.example.eyebox
 
 import android.content.Context
+import android.graphics.Canvas
 import android.graphics.Paint
 import android.util.AttributeSet
 import androidx.appcompat.widget.AppCompatTextView
@@ -21,24 +22,20 @@ class StrokeTextView @JvmOverloads constructor(
             strokeWidthPx = a.getDimension(R.styleable.StrokeTextView_strokeWidth, 0f)
             a.recycle()
         }
-        // Biar stroke halus
         paint.isAntiAlias = true
         paint.strokeJoin = Paint.Join.ROUND
         paint.strokeMiter = 10f
     }
 
-    override fun onDraw(canvas: android.graphics.Canvas) {
+    override fun onDraw(canvas: Canvas) {
         if (strokeWidthPx > 0f) {
-            // Simpan warna asli (fill)
             val originalColor = currentTextColor
 
-            // 1) gambar STROKE
             paint.style = Paint.Style.STROKE
             paint.strokeWidth = strokeWidthPx
             setTextColor(strokeColor)
             super.onDraw(canvas)
 
-            // 2) gambar FILL (warna normal)
             paint.style = Paint.Style.FILL
             setTextColor(originalColor)
             super.onDraw(canvas)

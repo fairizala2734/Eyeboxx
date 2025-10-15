@@ -17,32 +17,47 @@ android {
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         manifestPlaceholders["usesCleartextTraffic"] = true
+
+        // ⚠️ JANGAN set ndk { abiFilters ... } di sini
     }
 
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
             )
         }
+        debug {
+            isMinifyEnabled = false
+            isShrinkResources = false
+        }
     }
+
+    // 🔀 Hasilkan 3 APK: universal + arm64 + v7a
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include("arm64-v8a", "armeabi-v7a")
+            isUniversalApk = true   // ✅ aktifkan universal APK
+        }
+    }
+
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
-    kotlinOptions {
-        jvmTarget = "11"
-    }
+    kotlinOptions { jvmTarget = "11" }
+
     buildFeatures {
-        // Jika Anda menaruh .tflite di app/src/main/ml/
         mlModelBinding = true
         viewBinding = true
     }
 
     packaging {
-        // Hindari bentrok native libs (umum di mediapipe+tflite)
         resources.excludes += setOf(
             "META-INF/**",
             "org/bytedeco/**"
@@ -51,33 +66,32 @@ android {
 }
 
 dependencies {
-
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.appcompat)
     implementation(libs.material)
+
+    // CameraX
+    implementation("androidx.camera:camera-core:1.3.4")
+    implementation("androidx.camera:camera-camera2:1.3.4")
+    implementation("androidx.camera:camera-lifecycle:1.3.4")
+    implementation("androidx.camera:camera-view:1.3.4")
+
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
+    implementation("androidx.core:core-splashscreen:1.0.1")
+
+    // MediaPipe Tasks Vision
+    implementation("com.google.mediapipe:tasks-vision:0.10.14")
+
+    // TFLite minimal (tanpa Flex/GPU)
+    implementation("org.tensorflow:tensorflow-lite:2.14.0")
+
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
+}
 
-    // MediaPipe Tasks Vision
-    implementation ("com.google.mediapipe:tasks-vision:0.10.14")
-
-    // CameraX
-    implementation ("androidx.camera:camera-core:1.3.4")
-    implementation ("androidx.camera:camera-camera2:1.3.4")
-    implementation ("androidx.camera:camera-lifecycle:1.3.4")
-    implementation ("androidx.camera:camera-view:1.3.4")
-
-    // Lifecycle
-    implementation ("androidx.lifecycle:lifecycle-runtime-ktx:2.8.4")
-
-    // Kotlin coroutines (optional untuk off-main work)
-    implementation ("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
-
-    // (Opsional) delegate NNAPI / GPU
-    implementation("org.tensorflow:tensorflow-lite-select-tf-ops:2.14.0")
-
-    implementation("org.tensorflow:tensorflow-lite:2.14.0")
-
-    implementation("androidx.core:core-splashscreen:1.0.1")
-}   
+// Pastikan Flex/GPU TFLite tidak ikut transitif
+configurations.all {
+    exclude(group = "org.tensorflow", module = "tensorflow-lite-select-tf-ops")
+    exclude(group = "org.tensorflow", module = "tensorflow-lite-gpu")
+}
