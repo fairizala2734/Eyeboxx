@@ -41,7 +41,7 @@ class MainActivity : ComponentActivity() {
         private const val KEY_INTRO_OK = "intro_ok"
         private const val KEY_LAST_SESSION_MICROSLEEP = "last_session_microsleep"
 
-        private const val THRESH_MICROSLEEP_MS = 2000L
+        private const val THRESH_MICROSLEEP_MS = 1000L
         private const val THRESH_CLOSE = 0.95f
         private const val THRESH_OPEN  = 0.05f
     }
@@ -218,7 +218,7 @@ class MainActivity : ComponentActivity() {
                 if (faceHelper == null) {
                     faceHelper = FaceLandmarkerHelper(
                         applicationContext,
-                        preferGpu = false
+                        preferGpu = true
                     ).apply { setup("face_landmarker.task") }
                 }
                 if (eyeClassifier == null) {

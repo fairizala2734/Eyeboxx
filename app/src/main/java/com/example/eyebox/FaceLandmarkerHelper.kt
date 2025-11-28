@@ -26,6 +26,9 @@ class FaceLandmarkerHelper(
     fun setup(modelAssetPath: String = "face_landmarker.task") {
         if (landmarker != null) return
 
+        val delegateType = if (preferGpu) "GPU" else "CPU"
+        android.util.Log.i("FaceLandmarkerHelper", "Creating FaceLandmarker with $delegateType delegate")
+
         val base = BaseOptions.builder()
             .setModelAssetPath(modelAssetPath)
             .setDelegate(if (preferGpu) Delegate.GPU else Delegate.CPU)
@@ -41,7 +44,30 @@ class FaceLandmarkerHelper(
             .setRunningMode(RunningMode.VIDEO)
             .build()
 
-        landmarker = FaceLandmarker.createFromOptions(context.applicationContext, options)
+        try {
+            landmarker = FaceLandmarker.createFromOptions(context.applicationContext, options)
+            android.util.Log.i("FaceLandmarkerHelper", "FaceLandmarker created successfully with $delegateType")
+        } catch (e: Exception) {
+            android.util.Log.e("FaceLandmarkerHelper", "Failed to init FaceLandmarker with $delegateType: ${e.message}")
+            // fallback ke CPU kalau GPU gagal
+            if (preferGpu) {
+                val fallbackBase = BaseOptions.builder()
+                    .setModelAssetPath(modelAssetPath)
+                    .setDelegate(Delegate.CPU)
+                    .build()
+                val fallbackOptions = FaceLandmarkerOptions.builder()
+                    .setBaseOptions(fallbackBase)
+                    .setNumFaces(maxFaces)
+                    .setMinFaceDetectionConfidence(minFaceDetectionConfidence)
+                    .setMinFacePresenceConfidence(minFacePresenceConfidence)
+                    .setMinTrackingConfidence(minFaceTrackingConfidence)
+                    .setOutputFaceBlendshapes(false)
+                    .setRunningMode(RunningMode.VIDEO)
+                    .build()
+                landmarker = FaceLandmarker.createFromOptions(context.applicationContext, fallbackOptions)
+                android.util.Log.i("FaceLandmarkerHelper", "FaceLandmarker fallback to CPU delegate")
+            }
+        }
     }
 
     fun close() {
