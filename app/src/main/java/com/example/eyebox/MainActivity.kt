@@ -42,8 +42,8 @@ class MainActivity : ComponentActivity() {
         private const val KEY_LAST_SESSION_MICROSLEEP = "last_session_microsleep"
 
         private const val THRESH_MICROSLEEP_MS = 1000L
-        private const val THRESH_CLOSE = 0.95f
-        private const val THRESH_OPEN  = 0.05f
+        private const val THRESH_CLOSE = 0.1f
+        private const val THRESH_OPEN  = 0.9f
     }
 
     private lateinit var previewView: PreviewView
@@ -81,6 +81,16 @@ class MainActivity : ComponentActivity() {
     private var lastUiPerfUpdateMs = 0L
     private var lastFps = 0.0
     private var emaLatencyMs = -1.0
+
+    // --- Performance recording ---
+    private var startTimeMs = 0L
+
+    private val fpsSamples = mutableListOf<Double>()
+    private val latencySamples = mutableListOf<Double>()
+
+    private var checkpoint5 = false
+    private var checkpoint15 = false
+    private var checkpoint30 = false
 
     private val requestPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -179,6 +189,10 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startCamera() {
+        if (startTimeMs == 0L) {
+            startTimeMs = SystemClock.uptimeMillis()
+        }
+
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
         cameraProviderFuture.addListener({
             val cameraProvider = cameraProviderFuture.get()
@@ -396,6 +410,45 @@ class MainActivity : ComponentActivity() {
                 lastUiPerfUpdateMs = now
                 val text = String.format("FPS %.1f  |  Lat %.1f ms", lastFps, emaLatencyMs)
                 runOnUiThread { tvPerf.text = text }
+            }
+            // ----- Add samples for stats -----
+            fpsSamples.add(lastFps)
+            latencySamples.add(emaLatencyMs)
+
+            // ----- Time elapsed from start -----
+            val elapsedMs = now - startTimeMs
+
+            // Utility function: calculate min/max/mean text
+            fun stats(list: List<Double>): String {
+                if (list.isEmpty()) return "empty"
+                val min = list.minOrNull() ?: 0.0
+                val max = list.maxOrNull() ?: 0.0
+                val mean = list.average()
+                return "min=%.1f | max=%.1f | mean=%.1f".format(min, max, mean)
+            }
+
+            // ---- Checkpoint 5 minutes ----
+            if (!checkpoint5 && elapsedMs >= 5 * 60_000) {
+                checkpoint5 = true
+                Log.i("PERF_CHECKPOINT", "----- 5 MINUTES -----")
+                Log.i("PERF_CHECKPOINT", "FPS  : ${stats(fpsSamples)}")
+                Log.i("PERF_CHECKPOINT", "LAT  : ${stats(latencySamples)}")
+            }
+
+            // ---- Checkpoint 15 minutes ----
+            if (!checkpoint15 && elapsedMs >= 15 * 60_000) {
+                checkpoint15 = true
+                Log.i("PERF_CHECKPOINT", "----- 15 MINUTES -----")
+                Log.i("PERF_CHECKPOINT", "FPS  : ${stats(fpsSamples)}")
+                Log.i("PERF_CHECKPOINT", "LAT  : ${stats(latencySamples)}")
+            }
+
+            // ---- Checkpoint 30 minutes ----
+            if (!checkpoint30 && elapsedMs >= 30 * 60_000) {
+                checkpoint30 = true
+                Log.i("PERF_CHECKPOINT", "----- 30 MINUTES -----")
+                Log.i("PERF_CHECKPOINT", "FPS  : ${stats(fpsSamples)}")
+                Log.i("PERF_CHECKPOINT", "LAT  : ${stats(latencySamples)}")
             }
             image.close()
         }
