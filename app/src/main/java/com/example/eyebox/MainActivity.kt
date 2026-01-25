@@ -6,6 +6,8 @@ import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.Matrix
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Log
@@ -44,6 +46,10 @@ class MainActivity : ComponentActivity() {
         private const val THRESH_MICROSLEEP_MS = 1000L
         private const val THRESH_CLOSE = 0.1f
         private const val THRESH_OPEN  = 0.9f
+
+        // UI throttle
+        private const val OVERLAY_INTERVAL_MS = 33L // ~30 FPS overlay
+        private const val PERF_UI_INTERVAL_MS = 250L
     }
 
     private lateinit var previewView: PreviewView
@@ -56,11 +62,20 @@ class MainActivity : ComponentActivity() {
     private var preview: Preview? = null
     private var analyzer: ImageAnalysis? = null
 
+    // Raw frame caches
     private var cachedBitmap: Bitmap? = null
     private var cachedArgb: IntArray? = null
     private var cachedRowBuffer: ByteArray? = null
     private var cachedW = -1
     private var cachedH = -1
+
+    // Rotate cache (avoid per-frame createBitmap)
+    private var rotatedBitmap: Bitmap? = null
+    private var rotatedCanvas: Canvas? = null
+    private val rotateMatrix = Matrix()
+    private var rotatedW = -1
+    private var rotatedH = -1
+    private var rotatedDeg = -1
 
     private var lastClosedLeft: Boolean? = null
     private var lastClosedRight: Boolean? = null
@@ -76,21 +91,30 @@ class MainActivity : ComponentActivity() {
     private val analysisExecutor = Executors.newSingleThreadExecutor()
     @Volatile private var analyzingEnabled = false
 
+    // FPS/Latency for on-screen display
     private var fpsFrames = 0
     private var fpsWindowStartMs = 0L
     private var lastUiPerfUpdateMs = 0L
+    private var lastOverlayUpdateMs = 0L
     private var lastFps = 0.0
     private var emaLatencyMs = -1.0
 
-    // --- Performance recording ---
+    // Performance test timing
     private var startTimeMs = 0L
-
-    private val fpsSamples = mutableListOf<Double>()
-    private val latencySamples = mutableListOf<Double>()
-
     private var checkpoint5 = false
     private var checkpoint15 = false
     private var checkpoint30 = false
+
+    // Running stats (no lists -> stable 30 min)
+    private var fpsMin = Double.POSITIVE_INFINITY
+    private var fpsMax = 0.0
+    private var fpsSum = 0.0
+    private var fpsCount = 0
+
+    private var latMin = Double.POSITIVE_INFINITY
+    private var latMax = 0.0
+    private var latSum = 0.0
+    private var latCount = 0
 
     private val requestPermission = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
@@ -134,7 +158,7 @@ class MainActivity : ComponentActivity() {
         orientationListener = object : OrientationEventListener(this) {
             override fun onOrientationChanged(orientation: Int) {
                 val newRotation = when (orientation) {
-                    in 45..134  -> Surface.ROTATION_270
+                    in 45..134 -> Surface.ROTATION_270
                     in 225..314 -> Surface.ROTATION_90
                     in 0..44, in 315..359 -> Surface.ROTATION_0
                     in 135..224 -> Surface.ROTATION_180
@@ -168,8 +192,8 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         orientationListener?.enable()
-        startCamera()
         analyzingEnabled = true
+        startCamera()
     }
 
     override fun onPause() {
@@ -178,7 +202,7 @@ class MainActivity : ComponentActivity() {
         super.onPause()
         analyzingEnabled = false
         analyzer?.clearAnalyzer()
-        ProcessCameraProvider.getInstance(this).get().unbindAll()
+        unbindCameraAsync()
     }
 
     private fun ensureCameraPermission() {
@@ -189,9 +213,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun startCamera() {
-        if (startTimeMs == 0L) {
-            startTimeMs = SystemClock.uptimeMillis()
-        }
+        if (startTimeMs == 0L) startTimeMs = SystemClock.uptimeMillis()
 
         val cameraProviderFuture = ProcessCameraProvider.getInstance(this)
         cameraProviderFuture.addListener({
@@ -202,7 +224,10 @@ class MainActivity : ComponentActivity() {
 
             val resSelector4x3 = ResolutionSelector.Builder()
                 .setAspectRatioStrategy(
-                    AspectRatioStrategy(AspectRatio.RATIO_4_3, AspectRatioStrategy.FALLBACK_RULE_AUTO)
+                    AspectRatioStrategy(
+                        AspectRatio.RATIO_4_3,
+                        AspectRatioStrategy.FALLBACK_RULE_AUTO
+                    )
                 )
                 .build()
 
@@ -248,6 +273,13 @@ class MainActivity : ComponentActivity() {
         }, ContextCompat.getMainExecutor(this))
     }
 
+    private fun unbindCameraAsync() {
+        val future = ProcessCameraProvider.getInstance(this)
+        future.addListener({
+            try { future.get().unbindAll() } catch (_: Throwable) {}
+        }, ContextCompat.getMainExecutor(this))
+    }
+
     private fun ensureCaches(w: Int, h: Int) {
         if (w != cachedW || h != cachedH || cachedBitmap == null || cachedArgb == null) {
             cachedW = w
@@ -257,11 +289,40 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun rotateBitmap(src: Bitmap, rotationDeg: Int): Bitmap {
+    // rotate WITHOUT allocating a new bitmap each frame
+    private fun rotateIntoCache(src: Bitmap, rotationDeg: Int): Bitmap {
         val rot = ((rotationDeg % 360) + 360) % 360
         if (rot == 0) return src
-        val m = android.graphics.Matrix().apply { setRotate(rot.toFloat()) }
-        return Bitmap.createBitmap(src, 0, 0, src.width, src.height, m, true)
+
+        val dstW = if (rot == 90 || rot == 270) src.height else src.width
+        val dstH = if (rot == 90 || rot == 270) src.width else src.height
+
+        if (rotatedBitmap == null || rotatedW != dstW || rotatedH != dstH || rotatedDeg != rot) {
+            rotatedW = dstW
+            rotatedH = dstH
+            rotatedDeg = rot
+            rotatedBitmap = createBitmap(dstW, dstH)
+            rotatedCanvas = Canvas(rotatedBitmap!!)
+        }
+
+        rotateMatrix.reset()
+        when (rot) {
+            90 -> {
+                rotateMatrix.postRotate(90f)
+                rotateMatrix.postTranslate(dstW.toFloat(), 0f)
+            }
+            180 -> {
+                rotateMatrix.postRotate(180f)
+                rotateMatrix.postTranslate(dstW.toFloat(), dstH.toFloat())
+            }
+            270 -> {
+                rotateMatrix.postRotate(270f)
+                rotateMatrix.postTranslate(0f, dstH.toFloat())
+            }
+        }
+
+        rotatedCanvas!!.drawBitmap(src, rotateMatrix, null)
+        return rotatedBitmap!!
     }
 
     private fun analyze(image: ImageProxy) {
@@ -310,12 +371,11 @@ class MainActivity : ComponentActivity() {
             rawBitmap.setPixels(argb, 0, w, 0, 0, w, h)
 
             val rotation = image.imageInfo.rotationDegrees
-            val uprightBitmap = rotateBitmap(rawBitmap, rotation)
+            val uprightBitmap = rotateIntoCache(rawBitmap, rotation)
             val uprightW = uprightBitmap.width
             val uprightH = uprightBitmap.height
 
             val mpImage: MPImage = BitmapImageBuilder(uprightBitmap).build()
-
             val tsNs = image.imageInfo.timestamp
             val tsMs = if (tsNs != 0L) TimeUnit.NANOSECONDS.toMillis(tsNs) else SystemClock.uptimeMillis()
 
@@ -326,19 +386,19 @@ class MainActivity : ComponentActivity() {
                 try {
                     val result = eyeClassifier!!.classifyPerEye(
                         frameBitmap = uprightBitmap,
-                        leftEyeNorm  = first.first,
+                        leftEyeNorm = first.first,
                         rightEyeNorm = first.second,
                         frameW = uprightW,
                         frameH = uprightH,
                         rotationDeg = 0
                     )
-                    val pL = result.probsLeft[0]   // [closed, open]
+                    val pL = result.probsLeft[0]
                     val pR = result.probsRight[0]
 
                     lastClosedLeft = when (lastClosedLeft) {
                         null -> when {
                             pL >= THRESH_CLOSE -> true
-                            pL <= THRESH_OPEN  -> false
+                            pL <= THRESH_OPEN -> false
                             else -> lastClosedLeft
                         }
                         true -> if (pL <= THRESH_OPEN) false else true
@@ -347,7 +407,7 @@ class MainActivity : ComponentActivity() {
                     lastClosedRight = when (lastClosedRight) {
                         null -> when {
                             pR >= THRESH_CLOSE -> true
-                            pR <= THRESH_OPEN  -> false
+                            pR <= THRESH_OPEN -> false
                             else -> lastClosedRight
                         }
                         true -> if (pR <= THRESH_OPEN) false else true
@@ -366,11 +426,15 @@ class MainActivity : ComponentActivity() {
 
                         if (!warningShown && dur >= THRESH_MICROSLEEP_MS) {
                             warningShown = true
+                            analyzingEnabled = false // stop analyzer BEFORE UI navigation
                             Log.i("EyeBox", "alarm: ${dur}ms")
 
-                            AlarmPlayer.play(applicationContext)
-                            prefs.edit().putBoolean(KEY_LAST_SESSION_MICROSLEEP, true).apply()
-                            runOnUiThread { startActivity(Intent(this, WarningActivity::class.java)) }
+                            // UI-safe
+                            previewView.post {
+                                AlarmPlayer.play(applicationContext)
+                                prefs.edit().putBoolean(KEY_LAST_SESSION_MICROSLEEP, true).apply()
+                                startActivity(Intent(this@MainActivity, WarningActivity::class.java))
+                            }
                         }
                     } else {
                         closedStartMs = 0L
@@ -381,75 +445,89 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            runOnUiThread {
-                overlay.setStateClosedPerEye(lastClosedLeft, lastClosedRight)
-                overlay.updateEyes(
-                    first?.first,
-                    first?.second,
-                    frameW = uprightW,
-                    frameH = uprightH,
-                    mirrorX = true,
-                    rotationDeg = 0
-                )
+            // Throttle overlay updates to reduce UI thread pressure
+            val nowUi = SystemClock.uptimeMillis()
+            if (nowUi - lastOverlayUpdateMs >= OVERLAY_INTERVAL_MS) {
+                lastOverlayUpdateMs = nowUi
+                runOnUiThread {
+                    overlay.setStateClosedPerEye(lastClosedLeft, lastClosedRight)
+                    overlay.updateEyes(
+                        first?.first,
+                        first?.second,
+                        frameW = uprightW,
+                        frameH = uprightH,
+                        mirrorX = true,
+                        rotationDeg = 0
+                    )
+                }
             }
+
         } catch (t: Throwable) {
             Log.e("EyeBox", "analyze err", t)
         } finally {
             val now = SystemClock.uptimeMillis()
             val latency = (now - frameStartMs).toDouble()
+
+            // EMA for display only
             emaLatencyMs = if (emaLatencyMs < 0) latency else (0.8 * emaLatencyMs + 0.2 * latency)
+
+            // Running latency stats (raw latency)
+            latMin = minOf(latMin, latency)
+            latMax = maxOf(latMax, latency)
+            latSum += latency
+            latCount++
+
+            // FPS window
             if (fpsWindowStartMs == 0L) fpsWindowStartMs = now
             fpsFrames++
-            val windowDur = (now - fpsWindowStartMs)
+            val windowDur = now - fpsWindowStartMs
             if (windowDur >= 1000L) {
                 lastFps = fpsFrames * 1000.0 / windowDur.toDouble()
                 fpsFrames = 0
                 fpsWindowStartMs = now
+
+                if (lastFps > 0.0) {
+                    fpsMin = minOf(fpsMin, lastFps)
+                    fpsMax = maxOf(fpsMax, lastFps)
+                    fpsSum += lastFps
+                    fpsCount++
+                }
             }
-            if (now - lastUiPerfUpdateMs >= 250L) {
+
+            // Perf UI
+            if (now - lastUiPerfUpdateMs >= PERF_UI_INTERVAL_MS) {
                 lastUiPerfUpdateMs = now
                 val text = String.format("FPS %.1f  |  Lat %.1f ms", lastFps, emaLatencyMs)
                 runOnUiThread { tvPerf.text = text }
             }
-            // ----- Add samples for stats -----
-            fpsSamples.add(lastFps)
-            latencySamples.add(emaLatencyMs)
 
-            // ----- Time elapsed from start -----
+            // Checkpoints 5/15/30 min
             val elapsedMs = now - startTimeMs
-
-            // Utility function: calculate min/max/mean text
-            fun stats(list: List<Double>): String {
-                if (list.isEmpty()) return "empty"
-                val min = list.minOrNull() ?: 0.0
-                val max = list.maxOrNull() ?: 0.0
-                val mean = list.average()
-                return "min=%.1f | max=%.1f | mean=%.1f".format(min, max, mean)
+            fun statsText(): String {
+                val fpsMean = if (fpsCount > 0) fpsSum / fpsCount else 0.0
+                val latMean = if (latCount > 0) latSum / latCount else 0.0
+                val fpsMinSafe = if (fpsMin.isFinite()) fpsMin else 0.0
+                val latMinSafe = if (latMin.isFinite()) latMin else 0.0
+                return "FPS min=%.1f | max=%.1f | mean=%.1f || LAT min=%.1f | max=%.1f | mean=%.1f"
+                    .format(fpsMinSafe, fpsMax, fpsMean, latMinSafe, latMax, latMean)
             }
 
-            // ---- Checkpoint 5 minutes ----
             if (!checkpoint5 && elapsedMs >= 5 * 60_000) {
                 checkpoint5 = true
                 Log.i("PERF_CHECKPOINT", "----- 5 MINUTES -----")
-                Log.i("PERF_CHECKPOINT", "FPS  : ${stats(fpsSamples)}")
-                Log.i("PERF_CHECKPOINT", "LAT  : ${stats(latencySamples)}")
+                Log.i("PERF_CHECKPOINT", statsText())
             }
-
-            // ---- Checkpoint 15 minutes ----
             if (!checkpoint15 && elapsedMs >= 15 * 60_000) {
                 checkpoint15 = true
                 Log.i("PERF_CHECKPOINT", "----- 15 MINUTES -----")
-                Log.i("PERF_CHECKPOINT", "FPS  : ${stats(fpsSamples)}")
-                Log.i("PERF_CHECKPOINT", "LAT  : ${stats(latencySamples)}")
+                Log.i("PERF_CHECKPOINT", statsText())
             }
-
-            // ---- Checkpoint 30 minutes ----
             if (!checkpoint30 && elapsedMs >= 30 * 60_000) {
                 checkpoint30 = true
                 Log.i("PERF_CHECKPOINT", "----- 30 MINUTES -----")
-                Log.i("PERF_CHECKPOINT", "FPS  : ${stats(fpsSamples)}")
-                Log.i("PERF_CHECKPOINT", "LAT  : ${stats(latencySamples)}")
+                Log.i("PERF_CHECKPOINT", statsText())
             }
+
             image.close()
         }
     }
@@ -458,7 +536,7 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
         analyzingEnabled = false
         analyzer?.clearAnalyzer()
-        ProcessCameraProvider.getInstance(this).get().unbindAll()
+        unbindCameraAsync()
 
         analysisExecutor.shutdown()
         try { analysisExecutor.awaitTermination(200, TimeUnit.MILLISECONDS) } catch (_: Throwable) {}
@@ -467,5 +545,6 @@ class MainActivity : ComponentActivity() {
         eyeClassifier?.close(); eyeClassifier = null
 
         cachedBitmap = null; cachedArgb = null; cachedRowBuffer = null
+        rotatedBitmap = null; rotatedCanvas = null
     }
 }
